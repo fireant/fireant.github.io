@@ -1,0 +1,20 @@
+# Welcome to Jekyll!
+#
+# This config file is meant for settings that affect your whole blog, values
+# which you are expected to set up once and rarely need to edit after that.
+# For technical reasons, this file is *NOT* reloaded automatically when you use
+# 'jekyll serve'. If you change this file, please restart the server process.
+
+# Site settings
+title: Fireant
+email: fireant@users.noreply.github.com
+description: > # this means to ignore newlines until "baseurl:"
+  "Not to engage in the pursuit of ideas is to live like ants instead of like men." M. Adler
+baseurl: "" # the subpath of your site, e.g. /blog
+#url: "http://yourdomain.com" # the base hostname & protocol for your site
+url: "" # the base hostname & protocol for your site
+github_username:  fireant
+stackoverflow_username: 1334399
+
+# Build settings
+markdown: kramdown
