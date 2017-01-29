@@ -15,7 +15,7 @@ baseurl: "" # the subpath of your site, e.g. /blog
 url: "" # the base hostname & protocol for your site
 github_username:  fireant
 stackoverflow_username: 1334399
-disqus: disqus_iws08SrtZf
+disqus: fireant
 
 # Build settings
 markdown: kramdown
