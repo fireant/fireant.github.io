@@ -27,3 +27,7 @@ ft.putText(img=img,
 
 cv2.imwrite('image.png', img)
 ```
+
+The PNG image should like this: 
+![Image generated with OpenCV and text using the Ubuntu font](https://github.com/fireant/fireant.github.io/raw/master/assets/opencv_ttf_quick_fox.png)
+
