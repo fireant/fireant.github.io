@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "Enable CUDA and CUBLAS in OpenCV"
-date:   2016-05-21 12:57:30 -0700
+date:   2017-01-24 12:57:30 -0700
 categories: Misc
 ---
 
