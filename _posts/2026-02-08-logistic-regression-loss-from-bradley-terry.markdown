@@ -21,19 +21,31 @@ The naive approach is to count wins. But that fails when matchups are uneven. A 
 
 ## The Bradley-Terry model
 
-The idea is simple. Give every item a score on a number line. The further apart two items are, the more confident we are that the stronger one wins.
+The idea is simple. Give every item a positive strength. The probability of winning is proportional to your strength.
 
-Formally, item $i$ gets a score $s_i$. The probability that $i$ beats $j$ is:
+Formally, item $i$ has strength $\pi_i > 0$. The probability that $i$ beats $j$ is:
+
+$$P(i \text{ beats } j) = \frac{\pi_i}{\pi_i + \pi_j}$$
+
+If item A has strength 6 and item B has strength 3, then A wins with probability 6/9 = 2/3. Intuitive and hard to argue with. This is the original 1952 formulation by Bradley and Terry (though Ernst Zermelo had the same idea in 1929).
+
+**Where the $e$ comes from.** Strengths must be positive, which is an awkward constraint during optimization. A standard trick is to write $\pi_i = e^{s_i}$, where $s_i$ is an unconstrained score that can be any real number. The exponential guarantees a positive strength no matter what $s_i$ is. Substituting:
 
 $$P(i \text{ beats } j) = \frac{e^{s_i}}{e^{s_i} + e^{s_j}}$$
 
-With a bit of algebra (divide top and bottom by $e^{s_i}$), this simplifies to:
+The $e$ is not a deep mystery. It's just a device to convert unconstrained scores into positive strengths. This is the same trick behind softmax, Poisson regression, and many other models.
+
+**Simplifying to the sigmoid.** With a bit of algebra (divide top and bottom by $e^{s_j}$), the formula simplifies to:
 
 $$P(i \text{ beats } j) = \frac{1}{1 + e^{-(s_i - s_j)}} = \sigma(s_i - s_j)$$
 
 That's the **sigmoid function** applied to the score difference. The probability depends only on how much stronger $i$ is than $j$, not on their absolute scores. You could add 100 to every score and nothing would change.
 
-This model was proposed by Bradley and Terry in 1952, though Ernst Zermelo had the same idea in 1929. It keeps getting rediscovered because it's natural. If you want a simple, consistent way to turn score differences into probabilities, the sigmoid is essentially what you get.
+**The logit: what the scores actually mean.** Now look at this from the other direction. If the win probability is $p$, the **odds** are $p/(1-p)$ and the **log-odds** are $\log(p/(1-p))$. This log-odds function is called the **logit**, and it's the inverse of the sigmoid. In the Bradley-Terry model, the logit of the win probability is exactly the score difference:
+
+$$\text{logit}(P(i \text{ beats } j)) = \log \frac{P(i \text{ beats } j)}{P(j \text{ beats } i)} = s_i - s_j$$
+
+So the scores $s_i$ are log-odds of winning. A score difference of 1 means the odds are $e^1 \approx 2.7$ to 1. This is why logistic regression has its name: it models the **logit** (log-odds) as a linear function of features.
 
 ## Why the sigmoid? Where the noise comes from
 
