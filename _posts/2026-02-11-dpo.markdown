@@ -1,0 +1,203 @@
+---
+layout: post
+title:  "DPO: From Bradley-Terry to Direct Preference Optimization"
+date:   2026-02-11 12:00:00 -0700
+categories: ML Principles
+---
+
+*This is the fourth post in a series called "ML Principles for Practitioners." The [first post]({% post_url 2026-02-08-logistic-regression-loss-from-bradley-terry %}) derived the logistic loss from the Bradley-Terry model. The [second post]({% post_url 2026-02-09-what-is-maximum-likelihood-really %}) explained maximum likelihood estimation. The [third post]({% post_url 2026-02-10-kl-divergence %}) covered KL divergence and ended with the RLHF objective. This post shows how to solve that objective without a reward model.*
+
+---
+
+This is the payoff post. Everything in the series so far builds to this.
+
+The standard way to align a language model with human preferences (RLHF) has three stages: supervised fine-tuning, training a reward model from human comparisons, and then RL (usually PPO) to maximize that reward while staying close to the base model. It works, but it's complex. You need a separate reward model, an RL training loop with sampling and value estimation, and careful hyperparameter tuning.
+
+In 2023, Rafailov et al. asked: can we skip the reward model and the RL entirely? The answer is yes, and the derivation uses everything from the first three posts. The result is called **Direct Preference Optimization (DPO)**. This post walks through the derivation step by step, then covers when DPO works, when it doesn't, and why variants exist.
+
+This is the most math-heavy post in the series. But the pieces are all things we've already built, and the derivation has a satisfying structure: two clean parts, each using a concept from a previous post.
+
+## The RLHF objective (recap)
+
+Post 3 introduced this. The goal of RLHF is to find a policy $\pi$ (the fine-tuned model) that generates high-reward responses while staying close to the pretrained base model $\pi_{\text{ref}}$:
+
+$$\max_\pi \; \mathbb{E}_{x \sim \mathcal{D}, \, y \sim \pi(\cdot \mid x)}[r(x, y)] - \beta \cdot KL(\pi \| \pi_{\text{ref}})$$
+
+The first term pushes toward high reward. The second term (the KL penalty from Post 3) pulls back toward the base model. $\beta$ balances the two. The reward model $r(x, y)$ is trained from human preference data using the Bradley-Terry loss (Post 1).
+
+The question DPO asks: what if we could solve this optimization *without* ever training the reward model?
+
+## Part 1: The optimal policy has a closed form
+
+This is the first key insight. The RLHF objective says "maximize reward while staying close to the base model." It turns out the optimal policy that solves this has an elegant closed-form expression. Let's derive it.
+
+**Combine the two terms.** The KL divergence is an expectation over $\pi$ (we defined it in Post 3), so we can combine both terms under one expectation:
+
+$$\max_\pi \; \mathbb{E}_{y \sim \pi(\cdot \mid x)}\left[r(x,y) - \beta \log \frac{\pi(y \mid x)}{\pi_{\text{ref}}(y \mid x)}\right]$$
+
+This just substitutes the definition of KL. Now let's rearrange what's inside the brackets to see the structure more clearly.
+
+**Rearrange.** Divide by $\beta$ (since $\beta > 0$, this doesn't change the optimal $\pi$) and flip the sign to turn max into min:
+
+$$\min_\pi \; \mathbb{E}_{y \sim \pi(\cdot \mid x)}\left[\log \frac{\pi(y \mid x)}{\pi_{\text{ref}}(y \mid x)} - \frac{1}{\beta}r(x,y)\right]$$
+
+Now here's the trick. We want to recognize this as a KL divergence. To do that, we need to absorb the reward term into the denominator of the log fraction. We can write $\frac{1}{\beta}r(x,y) = \log \exp\left(\frac{r(x,y)}{\beta}\right)$, which lets us combine the logs:
+
+$$\min_\pi \; \mathbb{E}_{y \sim \pi(\cdot \mid x)}\left[\log \frac{\pi(y \mid x)}{\pi_{\text{ref}}(y \mid x) \exp\left(\frac{r(x,y)}{\beta}\right)}\right]$$
+
+There's one problem: the denominator $\pi_{\text{ref}}(y \mid x) \exp\left(\frac{r(x,y)}{\beta}\right)$ is not a valid probability distribution. It doesn't sum to 1 over all possible $y$. To fix this, we introduce a **normalization constant** (called the partition function):
+
+$$Z(x) = \sum_y \pi_{\text{ref}}(y \mid x) \exp\left(\frac{r(x,y)}{\beta}\right)$$
+
+Dividing by $Z(x)$ makes it a proper distribution. Adding and subtracting $\log Z(x)$ (which doesn't depend on $\pi$), the objective becomes:
+
+$$\min_\pi \; KL\left(\pi(y \mid x) \;\Big\|\; \frac{1}{Z(x)} \pi_{\text{ref}}(y \mid x) \exp\left(\frac{r(x,y)}{\beta}\right)\right) - \log Z(x)$$
+
+Now we can read off the answer. The $\log Z(x)$ term is a constant with respect to $\pi$, so minimizing the whole expression means minimizing just the KL divergence. From Post 3, we know KL divergence is non-negative and equals zero only when the two distributions are identical. So the optimal policy is the one that makes the KL zero:
+
+$$\pi^*(y \mid x) = \frac{1}{Z(x)} \pi_{\text{ref}}(y \mid x) \exp\left(\frac{r(x,y)}{\beta}\right)$$
+
+**What this says in plain English.** The optimal policy takes the base model's distribution and reweights every possible response by $\exp(r/\beta)$. Responses with high reward get upweighted. Responses with low reward get downweighted. The parameter $\beta$ controls how aggressively: small $\beta$ means extreme reweighting (chase reward hard, stray far from base), large $\beta$ means gentle reweighting (stay close to base). The partition function $Z(x)$ just makes sure everything still sums to 1.
+
+This is sometimes called the "Boltzmann" or "energy-based" form. It's the same kind of distribution that shows up in statistical physics: the probability of a state is proportional to the base rate times an exponential of the "energy" (here, the reward).
+
+This is a beautiful result, but it's not directly useful yet. We can't compute $\pi^*$ in practice because we'd need to know the reward for every possible response and compute $Z(x)$ (a sum over all possible outputs, which is intractable for language models). Here's where the second part of the derivation gets clever.
+
+## Part 2: Eliminating the reward model
+
+The key trick is to rearrange the optimal policy equation to express the *reward* in terms of the *policy*, and then plug that into the Bradley-Terry preference model from Post 1. The partition function will cancel, and we'll be left with a loss function that only involves the policy.
+
+**Step 1: Solve for the reward.** Start from the optimal policy:
+
+$$\pi^*(y \mid x) = \frac{1}{Z(x)} \pi_{\text{ref}}(y \mid x) \exp\left(\frac{r(x,y)}{\beta}\right)$$
+
+Take the log of both sides:
+
+$$\log \pi^*(y \mid x) = -\log Z(x) + \log \pi_{\text{ref}}(y \mid x) + \frac{1}{\beta}r(x,y)$$
+
+Rearrange to isolate the reward:
+
+$$r(x,y) = \beta \log \frac{\pi^*(y \mid x)}{\pi_{\text{ref}}(y \mid x)} + \beta \log Z(x)$$
+
+This says: the reward of a response equals $\beta$ times how much the optimal policy prefers it over the base model, plus a prompt-dependent constant $\beta \log Z(x)$. The reward is now written entirely in terms of the policy and the reference model.
+
+**Step 2: Plug into Bradley-Terry.** In Post 1, we saw that the Bradley-Terry model gives the probability that response $y_1$ is preferred over $y_2$ as:
+
+$$P(y_1 \succ y_2 \mid x) = \sigma(r(x, y_1) - r(x, y_2))$$
+
+where $\sigma$ is the sigmoid. Let's substitute our reward expression for both $y_1$ and $y_2$:
+
+$$r(x, y_1) - r(x, y_2) = \left[\beta \log \frac{\pi^*(y_1 \mid x)}{\pi_{\text{ref}}(y_1 \mid x)} + \beta \log Z(x)\right] - \left[\beta \log \frac{\pi^*(y_2 \mid x)}{\pi_{\text{ref}}(y_2 \mid x)} + \beta \log Z(x)\right]$$
+
+Look at what happens: the $\beta \log Z(x)$ terms appear in both brackets and **cancel**. This is the key moment. The intractable partition function disappears:
+
+$$r(x, y_1) - r(x, y_2) = \beta \log \frac{\pi^*(y_1 \mid x)}{\pi_{\text{ref}}(y_1 \mid x)} - \beta \log \frac{\pi^*(y_2 \mid x)}{\pi_{\text{ref}}(y_2 \mid x)}$$
+
+So the preference probability becomes:
+
+$$P(y_1 \succ y_2 \mid x) = \sigma\left(\beta \log \frac{\pi^*(y_1 \mid x)}{\pi_{\text{ref}}(y_1 \mid x)} - \beta \log \frac{\pi^*(y_2 \mid x)}{\pi_{\text{ref}}(y_2 \mid x)}\right)$$
+
+No reward model. No partition function. Just the policy and the reference model.
+
+**Step 3: Apply MLE.** We have preference data: pairs of responses where a human chose $y_c$ (chosen) over $y_r$ (rejected). From Post 2, we know the recipe: write the probability of the observed data, take the negative log, minimize. The DPO loss is:
+
+$$\mathcal{L}_{\text{DPO}} = -\mathbb{E}_{(x, y_c, y_r) \sim \mathcal{D}}\left[\log \sigma\left(\beta \log \frac{\pi_\theta(y_c \mid x)}{\pi_{\text{ref}}(y_c \mid x)} - \beta \log \frac{\pi_\theta(y_r \mid x)}{\pi_{\text{ref}}(y_r \mid x)}\right)\right]$$
+
+That's DPO. Let's pause and appreciate what just happened. We started with an RL objective (maximize reward with a KL constraint). We solved for the optimal policy in closed form. We plugged it into the Bradley-Terry preference model. The reward model and the partition function both disappeared. What's left is a classification loss on preference pairs that directly trains the policy. No reward model. No RL. Just gradient descent on a cross-entropy-style loss.
+
+## What the DPO loss actually says
+
+The formula can look intimidating, so let's unpack it.
+
+**The implicit reward.** Look at the quantity $\beta \log \frac{\pi_\theta(y \mid x)}{\pi_{\text{ref}}(y \mid x)}$. This is the log-ratio of the trained model to the base model, scaled by $\beta$. It measures how much the trained model prefers response $y$ compared to the base model. DPO treats this as an **implicit reward**: responses the trained model upweights (relative to base) have high implicit reward, and responses it downweights have low implicit reward. This is why the DPO paper is subtitled "Your Language Model Is Secretly a Reward Model."
+
+**The training signal.** The loss function is $-\log \sigma(\text{implicit reward of chosen} - \text{implicit reward of rejected})$. This is exactly the Bradley-Terry loss from Post 1, with implicit rewards as the scores. The sigmoid means: when the model already assigns a much higher implicit reward to the chosen response than the rejected one, the loss is small (the gradient barely nudges the model). When the model gets it wrong (it assigns higher implicit reward to the rejected response), the loss is large and the gradient pushes hard. The model learns to widen the gap between chosen and rejected.
+
+**A concrete training step.** Suppose we have a prompt "Explain photosynthesis" with a chosen response $y_c$ (clear, accurate) and a rejected response $y_r$ (vague, incorrect). We run both responses through the trained model $\pi_\theta$ and the frozen reference model $\pi_{\text{ref}}$, computing the log-probability of each response under each model. Then:
+
+- $\text{logit}_c = \beta \cdot (\log \pi_\theta(y_c \mid x) - \log \pi_{\text{ref}}(y_c \mid x))$
+- $\text{logit}_r = \beta \cdot (\log \pi_\theta(y_r \mid x) - \log \pi_{\text{ref}}(y_r \mid x))$
+- $\text{loss} = -\log \sigma(\text{logit}_c - \text{logit}_r)$
+
+The gradient pushes the model to increase $\pi_\theta(y_c \mid x)$ (make the good response more likely) and decrease $\pi_\theta(y_r \mid x)$ (make the bad response less likely), both relative to the reference model.
+
+**The implementation is remarkably simple.** The entire DPO loss in pseudocode is roughly:
+
+```python
+pi_logratios    = log_pi(chosen) - log_pi(rejected)
+ref_logratios   = log_ref(chosen) - log_ref(rejected)
+logits          = pi_logratios - ref_logratios
+loss            = -log_sigmoid(beta * logits)
+```
+
+Four lines. Forward pass through the policy model and reference model, compute log-probability ratios, apply sigmoid, take the loss. This simplicity is DPO's main practical appeal. Compare this to PPO, which requires a reward model forward pass, value function estimation, advantage computation, clipped surrogate objectives, and careful rollout management.
+
+## Everything connects
+
+This is the payoff for the series. Let's trace exactly how each post contributes to DPO:
+
+**Post 1 (Bradley-Terry)** provides the preference model. The probability that a human prefers $y_c$ over $y_r$ is $\sigma(\text{score}_c - \text{score}_r)$. DPO uses exactly this model, with the implicit reward $\beta \log \frac{\pi_\theta(y \mid x)}{\pi_{\text{ref}}(y \mid x)}$ as the score. The sigmoid, the score difference, the logistic loss -- it's all Bradley-Terry.
+
+**Post 2 (MLE)** provides the training procedure. We have observed preferences. We want parameters that make those observations most likely. Take the negative log-likelihood and minimize it. DPO's loss IS the negative log-likelihood of the observed preferences under the Bradley-Terry model with implicit rewards. It's MLE, applied to preference data.
+
+**Post 3 (KL divergence)** provides the constraint that makes the whole derivation work. The KL penalty in the RLHF objective is what forces the optimal policy into the Boltzmann form, which is what we rearranged to eliminate the reward model. Without the KL constraint, there's no closed-form solution and no DPO. The log-ratio $\log \frac{\pi_\theta}{\pi_{\text{ref}}}$ that appears everywhere in the DPO loss is the per-response KL contribution from Post 3.
+
+**This post** shows that combining all three, you can algebraically eliminate the reward model. The partition function cancels because Bradley-Terry only cares about *differences* in reward (Post 1's insight that only score differences matter). The result is a loss function that trains the policy directly from preference data.
+
+If you read a DPO-variant paper and want to understand what changed, ask: did they change the preference model (Post 1)? The training objective (Post 2)? The divergence constraint (Post 3)? Every variant modifies one of these pieces.
+
+## When DPO works and when it doesn't
+
+DPO is elegant, but elegance doesn't always mean best. Here's an honest assessment.
+
+**Where DPO shines.** No reward model to train or maintain. No RL sampling loop during training. Stable optimization (just gradient descent on a classification loss). Simple to implement. Lower compute cost than PPO. For most practitioners getting started with preference tuning, DPO is the right default choice. Many production models have used it, including Llama 3 Instruct and Zephyr.
+
+**Where DPO struggles.**
+
+*Offline data only.* DPO trains on a fixed dataset of preference pairs. It can't generate new responses during training to explore what works. This means it can only learn from the responses in the dataset. If the best possible response isn't similar to anything in the data, DPO won't find it. RL methods like PPO generate fresh responses during training, score them with the reward model, and learn from the results. This exploration is a fundamental advantage.
+
+*Preference displacement.* An underappreciated issue: DPO tends to decrease the log-probability of *both* the chosen and rejected responses, just decreasing rejected by more. The model isn't learning to generate the chosen response more often in absolute terms. It's learning to prefer it *relatively*. This can push probability mass toward responses that aren't in the training data at all, with unpredictable results.
+
+*Sensitivity to noisy labels.* If annotators disagree on which response is better (which is common), DPO treats every preference pair equally and can overfit to the noise. RL methods are somewhat more robust because the reward model aggregates many comparisons into smooth reward scores.
+
+**When RL methods (PPO) win.** Research consistently shows PPO outperforms DPO on complex reasoning tasks (math, code) where exploration matters, and when you have a strong reward model and the compute budget to run RL. The gap grows as tasks get harder.
+
+**The practical consensus.** DPO is the right starting point. Many teams use it as the first stage of post-training, then optionally follow up with PPO for further refinement if the task demands it. The choice of algorithm matters less than the quality of your preference data and the strength of your base model.
+
+## The landscape of variants
+
+DPO spawned a family of related methods. Each addresses a specific limitation. Here's a quick map so you know what exists and why:
+
+**IPO** (Identity Preference Optimization) softens the Bradley-Terry assumption. Instead of assuming human preferences perfectly follow the sigmoid, IPO uses a different loss that's more robust to noisy or inconsistent labels. If your preference data is messy (and it usually is), IPO can help.
+
+**SimPO** averages the log-probabilities across tokens instead of summing them, effectively adding length normalization. Standard DPO can be biased toward shorter responses (fewer tokens means fewer chances to accumulate low log-probs). SimPO fixes this.
+
+**KTO** (Kahneman-Tversky Optimization) works with binary feedback (thumbs up / thumbs down on individual responses) instead of pairwise preferences. This is useful when you don't have paired comparisons, just individual quality judgments.
+
+**Online DPO** generates new responses from the current model during training, then scores and ranks them. This gets the exploration benefit of RL without the full PPO machinery. It's a middle ground between offline DPO and full RLHF.
+
+The pattern: each variant changes one piece of the framework. IPO changes the preference model (Post 1's Bradley-Terry). SimPO changes how scores are computed. KTO changes the data format. Online DPO changes from offline to online data. Understanding the framework from this series lets you quickly understand any new variant by asking "which piece did they change?"
+
+## What's next
+
+This completes the core path of the series. In four posts, we've gone from the logistic loss to direct preference optimization:
+
+1. **Bradley-Terry**: where the logistic loss comes from and what it assumes
+2. **MLE**: the principle behind training (minimize negative log-likelihood)
+3. **KL divergence**: the measure that connects MLE to RLHF
+4. **DPO**: the algebraic trick that eliminates the reward model
+
+A reader who followed this path can now pick up any DPO-variant paper, any RLHF paper, or any reward modeling paper and understand the foundational assumptions. The question to always ask is: what model are they assuming, what are they optimizing, and what constraint are they using?
+
+Future posts in this series will branch into deeper topics: policy gradients and the full RLHF pipeline, reward models for reasoning (process vs outcome rewards), contrastive learning and vision-language models, and more. Each branch builds on the foundations from these four posts.
+
+---
+
+**References**
+
+1. R. Rafailov, A. Sharma, E. Mitchell, S. Ermon, C. Manning, and C. Finn. ["Direct Preference Optimization: Your Language Model is Secretly a Reward Model."](https://arxiv.org/abs/2305.18290) NeurIPS 2023. The original DPO paper.
+2. N. Lambert. [RLHF Book, Chapter 12: Direct Alignment.](https://rlhfbook.com/c/12-direct-alignment) Detailed derivations and practical considerations for DPO and variants.
+3. G. Azar, M. Rowland, et al. ["A General Theoretical Paradigm to Understand Learning from Human Feedback."](https://proceedings.mlr.press/v238/gheshlaghi-azar24a.html) The IPO paper, which generalizes DPO and addresses overfitting.
+4. [Post 1 in this series]({% post_url 2026-02-08-logistic-regression-loss-from-bradley-terry %}). The Bradley-Terry / logistic loss derivation.
+5. [Post 2 in this series]({% post_url 2026-02-09-what-is-maximum-likelihood-really %}). Maximum likelihood estimation and its properties.
+6. [Post 3 in this series]({% post_url 2026-02-10-kl-divergence %}). KL divergence and its role in RLHF.
