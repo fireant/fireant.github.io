@@ -190,7 +190,7 @@ Practitioners tune $\beta$ to find the sweet spot: enough freedom to improve, en
 
 $$\pi(y \mid x) = \pi(t_1 \mid x) \cdot \pi(t_2 \mid x, t_1) \cdot \pi(t_3 \mid x, t_1, t_2) \cdots$$
 
-That's a product of per-token conditional probabilities. Now, KL divergence involves $\log \frac{\pi(y|x)}{\pi_{\text{ref}}(y|x)}$. Taking the log of a product gives a sum:
+That's a product of per-token conditional probabilities. Now, KL divergence involves $\log \frac{\pi(y \mid x)}{\pi_{\text{ref}}(y \mid x)}$. Taking the log of a product gives a sum:
 
 $$\log \frac{\pi(y \mid x)}{\pi_{\text{ref}}(y \mid x)} = \sum_{k=1}^{T} \log \frac{\pi(t_k \mid x, t_{<k})}{\pi_{\text{ref}}(t_k \mid x, t_{<k})}$$
 
