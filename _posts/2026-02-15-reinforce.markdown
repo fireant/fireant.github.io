@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "The REINFORCE Trick: Optimizing What You Can't Differentiate"
-date:   2026-02-16 12:00:00 -0700
+date:   2026-02-15 12:00:00 -0700
 categories: RL for LLMs
 ---
 
