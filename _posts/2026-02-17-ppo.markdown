@@ -5,11 +5,11 @@ date:   2026-02-17 12:00:00 -0700
 categories: RL for LLMs
 ---
 
-*This is the second post in the series "RL for Language Models." The [first post]({% post_url 2026-02-16-reinforce %}) derived the REINFORCE gradient estimator and introduced baselines and the advantage. This post covers the two additions that made RL practical for language models: clipping and the critic.*
+*This is the second post in the series "RL for Language Models." The [first post]({% post_url 2026-02-15-reinforce %}) derived the REINFORCE gradient estimator and introduced baselines and the advantage. This post covers the two additions that made RL practical for language models: clipping and the critic.*
 
 ---
 
-The [previous post]({% post_url 2026-02-16-reinforce %}) gave us REINFORCE: sample a response, score it, push the model toward high-scoring responses and away from low-scoring ones. The math is clean, the algorithm is simple, and it's the foundation of everything that follows.
+The [previous post]({% post_url 2026-02-15-reinforce %}) gave us REINFORCE: sample a response, score it, push the model toward high-scoring responses and away from low-scoring ones. The math is clean, the algorithm is simple, and it's the foundation of everything that follows.
 
 But REINFORCE has two problems that make it impractical for training large language models.
 
@@ -119,5 +119,5 @@ That's **GRPO** (Group Relative Policy Optimization), the algorithm behind DeepS
 2. L. Ouyang, J. Wu, X. Jiang, et al. ["Training Language Models to Follow Instructions with Human Feedback."](https://arxiv.org/abs/2203.02155) NeurIPS 2022. The InstructGPT paper; applied PPO to language model alignment at scale.
 3. R. Zheng, S. Dou, S. Gao, et al. ["Secrets of RLHF in Large Language Models."](https://arxiv.org/abs/2307.04964) 2023. Practical insights on making PPO work for LLMs, including reward model and critic design.
 4. N. Lambert. [RLHF Book, Chapters 9-10.](https://rlhfbook.com/c/09-policy-gradients) Covers policy gradients and PPO in the language model setting.
-5. [Post 1 in this series]({% post_url 2026-02-16-reinforce %}). The REINFORCE algorithm, baselines, and the advantage.
+5. [Post 1 in this series]({% post_url 2026-02-15-reinforce %}). The REINFORCE algorithm, baselines, and the advantage.
 6. [KL divergence post]({% post_url 2026-02-10-kl-divergence %}) in the ML Principles series. The reverse-KL penalty that keeps the policy close to the base model.
