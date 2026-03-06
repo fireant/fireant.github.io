@@ -1,0 +1,123 @@
+---
+layout: post
+title:  "PPO: How ChatGPT Was Trained"
+date:   2026-02-17 12:00:00 -0700
+categories: RL for LLMs
+---
+
+*This is the second post in the series "RL for Language Models." The [first post]({% post_url 2026-02-16-reinforce %}) derived the REINFORCE gradient estimator and introduced baselines and the advantage. This post covers the two additions that made RL practical for language models: clipping and the critic.*
+
+---
+
+The [previous post]({% post_url 2026-02-16-reinforce %}) gave us REINFORCE: sample a response, score it, push the model toward high-scoring responses and away from low-scoring ones. The math is clean, the algorithm is simple, and it's the foundation of everything that follows.
+
+But REINFORCE has two problems that make it impractical for training large language models.
+
+**Problem 1: instability.** A single gradient step can change the policy drastically. If a sampled response happens to get a high reward, REINFORCE takes a large step toward producing it more often. After that step, the model might behave very differently -- generating responses it has never been scored on before. Those responses get different rewards, pushing the model in yet another direction. The policy lurches from update to update, never settling. In the worst case, the model starts producing gibberish, receives terrible rewards, and the gradient pushes it further into gibberish. A death spiral.
+
+**Problem 2: crude baselines.** Post 1 showed that subtracting a baseline from the reward is critical for variance reduction. The natural choice is the mean reward across the batch. But a batch-mean baseline is the same for every prompt. It can't capture the fact that the same reward means very different things for easy and hard questions. We need a baseline that adapts to each prompt.
+
+**PPO** (Proximal Policy Optimization, Schulman et al. 2017) fixes both problems. It was the algorithm behind InstructGPT and ChatGPT -- the first models to demonstrate that RL from human feedback could produce strikingly more helpful and honest responses compared to supervised fine-tuning alone. But PPO's improvements come at a significant cost in complexity and compute. Understanding that cost is what motivates the final post in this series.
+
+## Clipping: don't change too much at once
+
+The instability problem has a clear cause: REINFORCE places no limit on how much the policy can change in a single update. If the reward is large or the gradient happens to be large, the parameters jump far. PPO's fix is to cap how far the policy can move.
+
+**The probability ratio.** To measure how much the policy has changed, PPO compares the new and old policy at each token:
+
+$$r_t(\theta) = \frac{\pi_\theta(t_k \mid t_{<k})}{\pi_{\theta_{\text{old}}}(t_k \mid t_{<k})}$$
+
+If $r_t = 1$, the new policy assigns the same probability to this token as the old one -- nothing has changed. If $r_t = 2$, the new policy is twice as likely to produce this token. If $r_t = 0.5$, half as likely. The further $r_t$ is from 1, the more the policy has changed at this token.
+
+**Why track this ratio?** In REINFORCE, you sample a batch of responses, compute one gradient step, update the model, and discard the samples. For large language models, sampling is expensive -- each response requires running the full model token by token. PPO amortizes this cost by taking *multiple* gradient steps on the same batch of samples. But after the first step, the policy has changed, and the samples no longer come from the current policy. The ratio $r_t$ accounts for this mismatch: it tells the optimizer how much the current policy has moved from the policy that generated the data.
+
+**The clipped surrogate objective.** Without any constraint, the optimizer could push $r_t$ to extreme values, making large changes that the advantage estimates (computed under the old policy) can't reliably support. PPO prevents this with clipping:
+
+$$L^{\text{CLIP}} = \mathbb{E}_t\left[\min\left(r_t \hat{A}_t, \;\text{clip}(r_t, \, 1-\epsilon, \, 1+\epsilon) \, \hat{A}_t\right)\right]$$
+
+The $\text{clip}$ function pins $r_t$ to the interval $[1 - \epsilon, \; 1 + \epsilon]$, where $\epsilon$ is typically 0.2. The $\min$ then picks whichever term is smaller. Let's walk through what happens in each case.
+
+**Good token ($\hat{A}_t > 0$).** The response turned out better than expected. The optimizer wants to make this token more likely, increasing $r_t$. The unclipped term $r_t \hat{A}_t$ grows without bound as $r_t$ increases. But once $r_t$ exceeds $1 + \epsilon = 1.2$, the clipped term becomes $(1.2)\hat{A}_t$, which stops growing. The $\min$ picks whichever is smaller -- the clipped term. The gradient goes to zero. No further incentive to push harder.
+
+A concrete example: $r_t = 1.5$, $\hat{A}_t = 2.0$, $\epsilon = 0.2$. Unclipped: $1.5 \times 2.0 = 3.0$. Clipped: $\text{clip}(1.5, \, 0.8, \, 1.2) \times 2.0 = 1.2 \times 2.0 = 2.4$. The $\min$ picks 2.4. The model has already made this token 50% more likely than before, and PPO says: that's enough for now.
+
+**Bad token ($\hat{A}_t < 0$).** The response was worse than expected. The optimizer wants to make this token less likely, decreasing $r_t$. Without clipping, it could push $r_t$ toward zero -- making the token nearly impossible. With clipping, once $r_t$ drops below $1 - \epsilon = 0.8$, the gradient goes to zero.
+
+A concrete example: $r_t = 0.6$, $\hat{A}_t = -1.5$. The model has already made this token 40% less likely. PPO says: you've already pulled back from this token; that's enough. Don't overcorrect based on a single bad experience.
+
+**What the min means.** The advantage $\hat{A}_t$ was estimated under the old policy. If the policy has moved substantially ($r_t$ far from 1), the advantage estimate may no longer be accurate -- we're extrapolating beyond the data. The $\min$ is a pessimistic hedge: if the update looks too good to be true, don't trust it.
+
+An analogy: driving at high speed. Small steering corrections are fine. Jerking the wheel sends you off the road. PPO's clipping is a governor on how hard the policy can steer per update.
+
+## The critic: learning what to expect
+
+Post 1 introduced baselines and showed that subtracting a constant from the reward is the key to reducing variance. The best constant baseline is the expected reward: $b^* = \mathbb{E}[R(y)]$. But a constant baseline has a fundamental limitation: it's the same for every prompt.
+
+**Why a constant baseline fails.** Consider two prompts in the same training batch:
+
+- Prompt A: "What is 2 + 2?" Easy. Most completions get it right. Expected reward $\approx 8$.
+- Prompt B: "Explain the proof of Fermat's Last Theorem." Hard. Most completions are mediocre. Expected reward $\approx 3$.
+
+Both prompts happen to produce a completion that scores 6. With a constant baseline of $b = 5.5$ (the batch mean):
+
+- Prompt A: advantage $= 6 - 5.5 = +0.5$. A slight push to reinforce this response.
+- Prompt B: advantage $= 6 - 5.5 = +0.5$. The same slight push.
+
+But these should be opposite signals. Scoring 6 on Prompt A is *below* what you'd expect for an easy question -- the model usually scores 8, so this response was surprisingly bad. Scoring 6 on Prompt B is *above* what you'd expect for a hard question -- the model usually scores 3, so this response was surprisingly good. A constant baseline misses this entirely.
+
+**The value function.** The fix is to learn a baseline that depends on the prompt. The **critic** $V_\psi(x)$ is a neural network that predicts: "for prompt $x$, what's the expected reward?" It learns this from experience during training -- observing many prompts and the rewards their completions receive.
+
+With the critic as baseline:
+
+- Prompt A: $V_\psi(A) \approx 8$. Advantage: $6 - 8 = -2$. Below expectations. Push down.
+- Prompt B: $V_\psi(B) \approx 3$. Advantage: $6 - 3 = +3$. Above expectations. Push up.
+
+Same reward, opposite training signals. The critic normalizes for prompt difficulty, giving the model a far more informative gradient than a constant baseline could. Where the constant baseline asks "was this response better than average overall?", the critic asks "was this response better than average *for this specific prompt*?"
+
+**Per-token estimates.** The critic can go further. Instead of one prediction per prompt, it can estimate expected reward at each token position: "given the prompt and the tokens generated so far, what's the expected reward for the complete response?" This lets the advantage vary across tokens within a single response. Post 1 noted that REINFORCE gives every token the same credit, regardless of which tokens actually mattered. A per-token critic can assign different advantages to different tokens, providing more granular learning signals. In practice, a technique called Generalized Advantage Estimation (GAE) smooths these per-token signals. The details aren't essential here; the key point is that the critic enables finer-grained credit than a constant baseline.
+
+**The cost.** The critic is typically a full-sized language model -- often initialized from the same checkpoint as the policy, but with a scalar output head instead of a vocabulary head. It must be loaded into GPU memory during training alongside the policy itself. That's an entire additional LLM whose sole purpose is to answer one question: for this prompt, what reward should I expect?
+
+## The RLHF pipeline and its cost
+
+PPO fits into a three-stage alignment pipeline. The [DPO post]({% post_url 2026-02-11-dpo %}) described this pipeline at a high level; here we can see how the pieces connect.
+
+**Stage 1: Supervised fine-tuning (SFT).** Train the base model on high-quality prompt-response pairs. This produces a model that can follow instructions and generate coherent responses.
+
+**Stage 2: Reward model training.** Collect human preferences: show annotators a prompt with two responses and ask which is better. Train a reward model to predict these preferences using the Bradley-Terry loss from [Post 1 of the ML Principles series]({% post_url 2026-02-08-logistic-regression-loss-from-bradley-terry %}). The reward model takes any (prompt, response) pair and outputs a scalar score.
+
+**Stage 3: PPO fine-tuning.** For each training step: generate responses from the current policy, score them with the reward model, compute advantages using the critic, and update the policy with the clipped objective. A per-token KL penalty keeps the policy close to the SFT model -- the same reverse-KL idea from the [KL divergence post]({% post_url 2026-02-10-kl-divergence %}), applied at each token position to prevent the model from drifting into territory the base model considers unlikely.
+
+**The four-model problem.** During Stage 3, four models must be in GPU memory at the same time:
+
+- $\pi_\theta$: the policy being trained
+- $\pi_{\text{ref}}$: a frozen copy of the SFT model (for the KL penalty)
+- $r_\phi$: the reward model (scores responses)
+- $V_\psi$: the critic (predicts expected reward)
+
+The cost is substantial. For a 7B-parameter model, each copy requires about 14GB in half-precision. Four copies: 56GB just for weights. Add optimizer states (Adam stores two extra copies of each trained parameter), gradients, and activations, and the total easily exceeds 200GB of GPU memory. For a 70B model, you need multiple nodes of 8xH100s.
+
+Compare this to DPO from the [previous series]({% post_url 2026-02-11-dpo %}): just the policy and reference model, trained with a cross-entropy-style loss on preference pairs. No RL loop, no sampling during training, no reward model, no critic. The simplicity gap is enormous.
+
+**The critic is the newest cost.** Of these four models, the policy, reference model, and reward model are needed for any RLHF approach. The critic is the addition that PPO specifically introduces. It's an entire extra LLM whose sole job is to predict expected reward. Is there a cheaper way to get that estimate?
+
+## What's next
+
+PPO solves both of the problems we started with. Clipping caps how much the policy can change per update, preventing the death spirals that plague raw REINFORCE. The critic replaces Post 1's constant baseline with a learned, prompt-aware estimate of expected reward, producing sharper and more accurate training signals. Together, these additions made RL stable enough to train InstructGPT (Ouyang et al., 2022), demonstrating that RLHF could reliably improve language models beyond what supervised fine-tuning alone achieved.
+
+But the cost is steep. Four models in GPU memory. A complex training loop that alternates between sampling, scoring, advantage estimation, and parameter updates. Numerous sensitive hyperparameters. Many teams found the engineering burden too high, which is part of why DPO became so popular despite PPO's stronger performance on complex tasks.
+
+The next post asks a pointed question. The critic exists to estimate one thing: the expected reward for a given prompt. But Post 1 already showed a simpler way to estimate an expected value -- just average the rewards you observe. What if, instead of training an entire neural network to predict expected reward, we simply sampled multiple completions for each prompt and used their average reward as the baseline?
+
+That's **GRPO** (Group Relative Policy Optimization), the algorithm behind DeepSeek-R1. The critic disappears. For tasks with verifiable rewards -- math problems with known answers, code with test suites -- the reward model disappears too. You just check whether the answer is correct. The pipeline drops from four models to two. And remarkably, the model trained this way spontaneously develops chain-of-thought reasoning, discovering on its own that thinking step by step leads to correct answers more often.
+
+---
+
+**References**
+
+1. J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov. ["Proximal Policy Optimization Algorithms."](https://arxiv.org/abs/1707.06347) 2017. The original PPO paper.
+2. L. Ouyang, J. Wu, X. Jiang, et al. ["Training Language Models to Follow Instructions with Human Feedback."](https://arxiv.org/abs/2203.02155) NeurIPS 2022. The InstructGPT paper; applied PPO to language model alignment at scale.
+3. R. Zheng, S. Dou, S. Gao, et al. ["Secrets of RLHF in Large Language Models."](https://arxiv.org/abs/2307.04964) 2023. Practical insights on making PPO work for LLMs, including reward model and critic design.
+4. N. Lambert. [RLHF Book, Chapters 9-10.](https://rlhfbook.com/c/09-policy-gradients) Covers policy gradients and PPO in the language model setting.
+5. [Post 1 in this series]({% post_url 2026-02-16-reinforce %}). The REINFORCE algorithm, baselines, and the advantage.
+6. [KL divergence post]({% post_url 2026-02-10-kl-divergence %}) in the ML Principles series. The reverse-KL penalty that keeps the policy close to the base model.
