@@ -11,19 +11,19 @@ categories: RL for LLMs
 
 This is the payoff post. Everything in the series so far builds to this.
 
-The [first post]({% post_url 2026-02-15-reinforce %}) gave us the foundational gradient: sample a response, score it, push the model toward high-scoring outputs and away from low-scoring ones. Scale the gradient by the *advantage* -- how much better (or worse) the response was compared to a baseline -- rather than raw reward. The [second post]({% post_url 2026-02-17-ppo %}) stabilized this with two additions: clipping prevents destructive updates, and the critic -- a learned neural network that predicts expected reward per prompt -- replaces the crude batch-mean baseline with a prompt-aware one. Together, these made RL practical for training ChatGPT.
+The [first post]({% post_url 2026-02-15-reinforce %}) gave us the foundational gradient: sample a response, score it, push the model toward high-scoring outputs and away from low-scoring ones. Scale the gradient by the *advantage*, (how much better (or worse) the response was compared to a baseline), rather than raw reward. The [second post]({% post_url 2026-02-17-ppo %}) stabilized this with two additions: clipping prevents destructive updates, and the critic, (a learned neural network that predicts expected reward per prompt), replaces the crude batch-mean baseline with a prompt-aware one. Together, these made RL practical for training ChatGPT.
 
 But the critic was expensive. An entire extra language model, just to answer one question: for this prompt, what reward should I expect?
 
-GRPO (Group Relative Policy Optimization, Shao et al. 2024) asks whether we can answer that question more cheaply. Instead of learning a model that predicts expected reward, just *measure* it: sample several completions for the prompt, score them, and use their average as the baseline. The critic vanishes. And when the reward function is a simple correctness check -- does the answer match? does the code pass the tests? -- the reward model vanishes too. The pipeline drops from four models to two.
+GRPO (Group Relative Policy Optimization, Shao et al. 2024) asks whether we can answer that question more cheaply. Instead of learning a model that predicts expected reward, just *measure* it: sample several completions for the prompt, score them, and use their average as the baseline. The critic vanishes. And when the reward function is a simple correctness check, (does the answer match? does the code pass the tests?), the reward model vanishes too. The pipeline drops from four models to two.
 
-The results, particularly DeepSeek-R1, were remarkable. A model trained this way -- with no human demonstrations of reasoning, no reward model, nothing but a correctness check -- spontaneously developed chain-of-thought reasoning.
+The results, particularly DeepSeek-R1, were remarkable. A model trained this way, (with no human demonstrations of reasoning, no reward model, nothing but a correctness check), spontaneously developed chain-of-thought reasoning.
 
 ## The key insight: just sample and compare
 
 The critic $V_\psi(x)$ in PPO learns, over many training steps, to predict: "for prompt $x$, what's the expected reward?" It acquires this knowledge by watching many prompts and their associated rewards. The insight behind GRPO is that you don't need to *learn* this. You can *observe* it directly.
 
-For each prompt in your training batch, generate not one completion but several -- say $K = 4$. Score all of them. Their average reward is an empirical estimate of the expected reward for that prompt. No learned model needed.
+For each prompt in your training batch, generate not one completion but several, (say $K = 4$). Score all of them. Their average reward is an empirical estimate of the expected reward for that prompt. No learned model needed.
 
 **The GRPO algorithm, step by step.** For each prompt $x$:
 
@@ -50,9 +50,9 @@ Normalized advantages:
 
 Every sample now carries a clear directional signal. Correct completions get reinforced, incorrect ones get suppressed, in proportion to how far they are from the group average. This is exactly Post 1's baseline idea, now applied per-prompt using group statistics.
 
-**Compare to the critic.** Post 2's easy-vs-hard prompt example showed why a constant baseline fails: a score of 6 means very different things for an easy prompt (below expectations) and a hard prompt (above expectations). The critic solved this by learning prompt-specific expected rewards. GRPO solves the same problem empirically. For an easy prompt, most completions score high -- the group mean is high, so only the best completions clear the bar for positive advantage. For a hard prompt, most completions score low -- the group mean is low, so even a modest completion that beats the group average gets reinforced. The prompt-specific normalization happens automatically.
+**Compare to the critic.** Post 2's easy-vs-hard prompt example showed why a constant baseline fails: a score of 6 means very different things for an easy prompt (below expectations) and a hard prompt (above expectations). The critic solved this by learning prompt-specific expected rewards. GRPO solves the same problem empirically. For an easy prompt, most completions score high, (the group mean is high, so only the best completions clear the bar for positive advantage). For a hard prompt, most completions score low, (the group mean is low, so even a modest completion that beats the group average gets reinforced). The prompt-specific normalization happens automatically.
 
-**What we give up.** GRPO assigns the same advantage $\hat{A}_i$ to every token in completion $y_i$. The critic in Post 2 could, in principle, estimate how good the response was going to be *at each token position*, enabling per-token credit assignment. GRPO can't tell which tokens within a response were good or bad -- a response that gets positive advantage has all its tokens pushed up together, and a response with negative advantage has all its tokens pushed down together. This is the same limitation REINFORCE had. For tasks where the response is scored as a whole (correct or incorrect, helpful or not), this doesn't matter much in practice. The tradeoff -- lose per-token credit, gain a free baseline -- is worth it.
+**What we give up.** GRPO assigns the same advantage $\hat{A}_i$ to every token in completion $y_i$. The critic in Post 2 could, in principle, estimate how good the response was going to be *at each token position*, enabling per-token credit assignment. GRPO can't tell which tokens within a response were good or bad, (a response that gets positive advantage has all its tokens pushed up together, and a response with negative advantage has all its tokens pushed down together). This is the same limitation REINFORCE had. For tasks where the response is scored as a whole (correct or incorrect, helpful or not), this doesn't matter much in practice. The tradeoff, (lose per-token credit, gain a free baseline), is worth it.
 
 ## The GRPO objective
 
@@ -66,13 +66,13 @@ Each piece connects back to the earlier posts:
 
 **$\min(\cdot, \text{clip}(\cdot))$** is the PPO clipping from Post 2. Caps how much the policy can change per update, preventing the death spirals that plague raw REINFORCE.
 
-**$\hat{A}_i$** is the group-normalized advantage from this post. Constant across all tokens in response $i$. This is the only thing that changed from PPO -- the critic's output is replaced by a few lines of arithmetic.
+**$\hat{A}_i$** is the group-normalized advantage from this post. Constant across all tokens in response $i$. This is the only thing that changed from PPO, (the critic's output is replaced by a few lines of arithmetic).
 
 **$\frac{1}{|y_i|}$** normalizes by response length, so longer responses don't dominate the gradient just by having more tokens.
 
 **$\frac{1}{K}$** averages across the $K$ sampled completions for each prompt.
 
-**$-\beta \, KL(\pi_\theta \| \pi_{\text{ref}})$** is the reverse-KL penalty from the [KL divergence post]({% post_url 2026-02-10-kl-divergence %}) -- it keeps the policy from drifting far from the reference model. In PPO this was often added as a per-token reward bonus during rollout; here it appears as an explicit term in the objective.
+**$-\beta \, KL(\pi_\theta \| \pi_{\text{ref}})$** is the reverse-KL penalty from the [KL divergence post]({% post_url 2026-02-10-kl-divergence %}), (it keeps the policy from drifting far from the reference model). In PPO this was often added as a per-token reward bonus during rollout; here it appears as an explicit term in the objective.
 
 **The simplicity.** Despite the notation, the algorithm reduces to: for each batch of prompts, sample $K$ completions per prompt, score them all, subtract the group mean, divide by group std, run PPO clipping. There is no critic to train, no value function to update, and no separate forward pass through a value model. The only added cost over REINFORCE-with-baseline is generating $K$ completions per prompt instead of one.
 
@@ -80,18 +80,18 @@ Each piece connects back to the earlier posts:
 
 **Verifiable rewards.** For math problems, the reward is: did the model produce the correct final answer? For code, it's: did the code pass the test suite? For formal proofs, it's: does the proof checker accept it? These rewards are binary or near-binary, unambiguous, and require no human judgment.
 
-When rewards are verifiable, the learned reward model from Post 2's RLHF pipeline becomes unnecessary. You don't need a neural network that estimates "how good is this response?" -- you just check. The pipeline during training requires only two models in memory:
+When rewards are verifiable, the learned reward model from Post 2's RLHF pipeline becomes unnecessary. You don't need a neural network that estimates "how good is this response?", (you just check). The pipeline during training requires only two models in memory:
 
 - $\pi_\theta$: the policy being trained
 - $\pi_{\text{ref}}$: the frozen reference model for the KL penalty
 
 The reward model ($r_\phi$) is replaced by a deterministic function. The critic ($V_\psi$) is replaced by group statistics. Two entire language models are gone compared to PPO. For a 7B model this cuts the memory requirement from 200GB+ to something a single 8xA100 node can handle.
 
-**DeepSeek-R1-Zero.** In January 2025, DeepSeek released something that surprised the field. They trained a model called R1-Zero using only GRPO and verifiable math rewards -- no supervised fine-tuning on reasoning examples, no human demonstrations of chain-of-thought, no reward model. The setup was stark: here is a math problem, generate several attempts, the ones with correct answers get positive advantage, the ones without get negative advantage. Everything else the model learned on its own.
+**DeepSeek-R1-Zero.** In January 2025, DeepSeek released something that surprised the field. They trained a model called R1-Zero using only GRPO and verifiable math rewards, (no supervised fine-tuning on reasoning examples, no human demonstrations of chain-of-thought, no reward model). The setup was stark: here is a math problem, generate several attempts, the ones with correct answers get positive advantage, the ones without get negative advantage. Everything else the model learned on its own.
 
 What emerged, without being taught, was:
 
-**Chain-of-thought reasoning.** The model began producing extended reasoning traces before its final answer -- working through the problem step by step. No one told it to do this. It discovered that responses containing intermediate reasoning steps were more likely to be correct. Correctness meant positive advantage. So the model learned to reason.
+**Chain-of-thought reasoning.** The model began producing extended reasoning traces before its final answer, (working through the problem step by step). No one told it to do this. It discovered that responses containing intermediate reasoning steps were more likely to be correct. Correctness meant positive advantage. So the model learned to reason.
 
 **Self-verification.** The model began re-checking its own work, catching errors before committing to a final answer. Again, emergent: checking your work increases the chance of catching mistakes, which increases the chance of a correct answer, which increases reward.
 
@@ -99,17 +99,17 @@ What emerged, without being taught, was:
 
 These behaviors emerged from the optimization pressure alone. Among the $K$ completions generated for each math problem, the ones that included reasoning steps happened to be more often correct. Those got positive advantage. The model learned to repeat what worked. What worked was thinking carefully.
 
-**DeepSeek-R1** -- the full, publicly released model -- added a supervised fine-tuning stage on curated long-chain reasoning examples and a reward model for non-verifiable tasks like helpfulness and safety. But R1-Zero established the core result: GRPO with verifiable rewards is sufficient to bootstrap sophisticated reasoning ability from scratch.
+**DeepSeek-R1**, (the full, publicly released model), added a supervised fine-tuning stage on curated long-chain reasoning examples and a reward model for non-verifiable tasks like helpfulness and safety. But R1-Zero established the core result: GRPO with verifiable rewards is sufficient to bootstrap sophisticated reasoning ability from scratch.
 
 ## Everything connects
 
 This is the payoff for the series. Let's trace how each post contributed.
 
-**Post 1 (REINFORCE)** established the foundational gradient: $\mathbb{E}_{y \sim \pi_\theta}[R(y) \cdot \nabla_\theta \log \pi_\theta(y)]$. Sample, score, weight the gradient by the reward. It works in theory, but raw rewards are noisy. The fix -- subtract a baseline -- introduced the concept of the advantage. Post 1 used the batch mean as its baseline: same for every prompt, free to compute, better than nothing.
+**Post 1 (REINFORCE)** established the foundational gradient: $\mathbb{E}_{y \sim \pi_\theta}[R(y) \cdot \nabla_\theta \log \pi_\theta(y)]$. Sample, score, weight the gradient by the reward. It works in theory, but raw rewards are noisy. The fix, (subtract a baseline), introduced the concept of the advantage. Post 1 used the batch mean as its baseline: same for every prompt, free to compute, better than nothing.
 
 **Post 2 (PPO)** added two things. Clipping: cap the policy ratio to prevent destructive updates. The critic: a learned, prompt-dependent baseline that replaced the batch mean with a model that knew the expected reward for each specific prompt. These made RL stable and informative enough to train InstructGPT and ChatGPT. The cost: four models in GPU memory.
 
-**Post 3 (GRPO)** asks: can we get a prompt-dependent baseline without the cost? Yes -- by measuring the expected reward directly, sampling $K$ completions per prompt and using their mean. The critic's job was to estimate $\mathbb{E}[R \mid x]$. The group mean is an empirical estimate of the same quantity. Clipping stayed because it's cheap and essential. The critic left because it was expensive and replaceable.
+**Post 3 (GRPO)** asks: can we get a prompt-dependent baseline without the cost? Yes, (by measuring the expected reward directly, sampling $K$ completions per prompt and using their mean). The critic's job was to estimate $\mathbb{E}[R \mid x]$. The group mean is an empirical estimate of the same quantity. Clipping stayed because it's cheap and essential. The critic left because it was expensive and replaceable.
 
 The baseline thread across all three posts:
 - Constant baseline (Post 1): same for all prompts, approximate
@@ -120,9 +120,9 @@ GRPO's key insight: you don't need to *learn* what you can *measure*.
 
 **Two ways to simplify PPO.** The [DPO post]({% post_url 2026-02-11-dpo %}) in the previous series and GRPO both simplify the standard PPO pipeline, but from different directions:
 
-- **DPO** eliminates the reward model *algebraically* -- it rearranges the RLHF objective to express reward implicitly in terms of the policy ratio, then applies MLE directly to preference data. No RL needed. No sampling during training. The entire training loop collapses to gradient descent on a cross-entropy-style loss.
+- **DPO** eliminates the reward model *algebraically*, (it rearranges the RLHF objective to express reward implicitly in terms of the policy ratio, then applies MLE directly to preference data). No RL needed. No sampling during training. The entire training loop collapses to gradient descent on a cross-entropy-style loss.
 
-- **GRPO** eliminates the critic *empirically* -- it replaces a learned baseline with a measured one. RL remains: the model still generates completions during training, scores them, and learns from the results. This exploration is what enables GRPO to discover reasoning strategies that weren't in any training dataset.
+- **GRPO** eliminates the critic *empirically*, (it replaces a learned baseline with a measured one). RL remains: the model still generates completions during training, scores them, and learns from the results. This exploration is what enables GRPO to discover reasoning strategies that weren't in any training dataset.
 
 Both are principled simplifications of PPO. Neither is strictly better. The choice depends on what you have and what you need.
 

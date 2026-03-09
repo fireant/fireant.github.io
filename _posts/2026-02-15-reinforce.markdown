@@ -13,9 +13,9 @@ In supervised learning, training is straightforward. You have inputs, you have c
 
 But the most capable language models today aren't trained only with supervised learning. They're also trained with reinforcement learning: the model generates a response, a reward signal scores it (maybe a human rating, maybe a test case passing, maybe a proof checking out), and the model learns from that score. No one tells the model *what* the right response is. It only learns *how good* its response was.
 
-This creates a fundamental problem. In supervised learning, you can differentiate the loss directly through the model's output. In RL, the model *samples* its output -- it rolls dice at each token position to decide which token to produce -- and you can't differentiate through dice rolls. The output is discrete, stochastic, and the connection between parameters and reward passes through a sampling operation that has no gradient.
+This creates a fundamental problem. In supervised learning, you can differentiate the loss directly through the model's output. In RL, the model *samples* its output, (it rolls dice at each token position to decide which token to produce), and you can't differentiate through dice rolls. The output is discrete, stochastic, and the connection between parameters and reward passes through a sampling operation that has no gradient.
 
-The solution is a single mathematical identity from 1992, known as the REINFORCE trick. It's the foundation of all RL training for language models -- PPO, GRPO, and everything in between. This post derives it from scratch, explains what it means, and shows why it works but also why it's noisy.
+The solution is a single mathematical identity from 1992, known as the REINFORCE trick. It's the foundation of all RL training for language models, (PPO, GRPO, and everything in between). This post derives it from scratch, explains what it means, and shows why it works but also why it's noisy.
 
 ## The goal: maximize expected reward
 
@@ -43,7 +43,7 @@ The reward $R(y)$ doesn't depend on $\theta$ (it's a fixed score for each respon
 
 **Problem 1: the sum is intractable.** For a language model, $y$ ranges over all possible token sequences. Even for a short response of 100 tokens with a vocabulary of 50,000, the number of possible sequences is astronomical. We cannot enumerate them.
 
-**Problem 2: we can't estimate it by sampling in its current form.** The natural fix for an intractable sum is Monte Carlo estimation: sample a few $y$'s and average. We can easily sample from $\pi_\theta$ -- that's just running the model. But look at the sum we need to estimate: each term is $R(y) \cdot \nabla_\theta \pi_\theta(y)$.
+**Problem 2: we can't estimate it by sampling in its current form.** The natural fix for an intractable sum is Monte Carlo estimation: sample a few $y$'s and average. We can easily sample from $\pi_\theta$, (that's just running the model). But look at the sum we need to estimate: each term is $R(y) \cdot \nabla_\theta \pi_\theta(y)$.
 
 To estimate a sum by sampling from a distribution $\pi_\theta$, we need the sum to have the form $\sum_y \pi_\theta(y) \cdot [\text{something}]$, because then the recipe is simple: sample $y \sim \pi_\theta$, compute [something] for each sample, and average. That gives an unbiased estimate of the sum.
 
@@ -84,11 +84,11 @@ REINFORCE says: follow this gradient, but *scale it by the reward*.
 
 - If $R(y)$ is large and positive: take a big step toward making $y$ more likely. This response scored well; produce it more often.
 - If $R(y)$ is small and positive: take a small step. The response was OK but not great.
-- If $R(y)$ is negative: step in the *opposite* direction -- make $y$ *less* likely. This response was bad; avoid it.
+- If $R(y)$ is negative: step in the *opposite* direction, (make $y$ *less* likely). This response was bad; avoid it.
 
 **In plain English: REINFORCE tells the model to repeat what worked and avoid what didn't, in proportion to how well or poorly each response scored.** If you're learning to cook and a dish gets rave reviews, you'd make that dish more often. If it gets mediocre reviews, you'd adjust a little. If it's terrible, you'd stop making it. REINFORCE does exactly this, with the reward as the review.
 
-**Back to our example.** Suppose we sample one response and get "yes" (reward 8). The gradient estimate is $8 \cdot \nabla_\theta \log \pi_\theta(\text{yes})$: a strong push to make "yes" more probable. Good -- "yes" is the best response.
+**Back to our example.** Suppose we sample one response and get "yes" (reward 8). The gradient estimate is $8 \cdot \nabla_\theta \log \pi_\theta(\text{yes})$: a strong push to make "yes" more probable. Good, ("yes" is the best response).
 
 But suppose instead we sample "no" (reward 3). The estimate is $3 \cdot \nabla_\theta \log \pi_\theta(\text{no})$: a weaker but still positive push to make "no" more probable. The model takes a step toward generating "no" more often.
 
@@ -104,9 +104,9 @@ The gradient estimator is **unbiased**: averaged over many samples, it equals th
 
 The problem is especially bad when all rewards are positive, which is common in practice. If every response scores between 3 and 8, then REINFORCE pushes *every* sampled response up. It never pushes anything *down*. The net effect over many samples is correct (high-reward responses get pushed up more), but each individual update is an upward nudge toward whatever happened to be sampled, regardless of whether it was the best or worst option.
 
-**An analogy.** Suppose you're trying to figure out which of three restaurants is best. You visit one at random each night and rate the meal. All three are decent (ratings 6, 7, and 8 out of 10). After each visit, you tell yourself "that was good, I should go there more." You're never telling yourself "that was bad, I should go there less." Eventually the differences will emerge -- you'll visit the 8-rated restaurant slightly more often -- but it takes many meals because every night feels positive.
+**An analogy.** Suppose you're trying to figure out which of three restaurants is best. You visit one at random each night and rate the meal. All three are decent (ratings 6, 7, and 8 out of 10). After each visit, you tell yourself "that was good, I should go there more." You're never telling yourself "that was bad, I should go there less." Eventually the differences will emerge, (you'll visit the 8-rated restaurant slightly more often), but it takes many meals because every night feels positive.
 
-Now imagine the ratings were $-2$, $0$, and $+3$. You'd get a clear "avoid this" signal on some nights and a clear "go here" signal on others. You'd figure out the ranking much faster. The absolute quality hasn't changed -- the same restaurant is still the best. But the *relative* signals are sharper when some rewards are negative.
+Now imagine the ratings were $-2$, $0$, and $+3$. You'd get a clear "avoid this" signal on some nights and a clear "go here" signal on others. You'd figure out the ranking much faster. The absolute quality hasn't changed, (the same restaurant is still the best). But the *relative* signals are sharper when some rewards are negative.
 
 This is the key insight: REINFORCE learns from *absolute* rewards, but what matters for learning is the *relative* difference between good and bad options. We need a way to turn absolute rewards into relative ones.
 
@@ -148,7 +148,7 @@ So the REINFORCE gradient for a single sampled response is:
 
 $$R(y) \cdot \nabla_\theta \log \pi_\theta(y) = R(y) \cdot \sum_{k=1}^{T} \nabla_\theta \log \pi_\theta(t_k \mid t_{<k})$$
 
-Look at what this says. The *same* reward $R(y)$ -- a single number for the entire response -- multiplies the gradient at *every* token position. Token 1 gets the same credit as token 50 and token 200, regardless of which tokens actually made the response good or bad.
+Look at what this says. The *same* reward $R(y)$, (a single number for the entire response), multiplies the gradient at *every* token position. Token 1 gets the same credit as token 50 and token 200, regardless of which tokens actually made the response good or bad.
 
 **This is the credit assignment problem.** Suppose the model generates a 200-token explanation of photosynthesis. The first 150 tokens are clear and accurate. Token 151 introduces a factual error. The remaining tokens are fine but follow from the error. A human rates the whole response poorly.
 
@@ -156,7 +156,7 @@ REINFORCE penalizes every token equally. Tokens 1 through 150, which were excell
 
 Supervised fine-tuning doesn't have this problem. There, each token gets its own gradient from its own target: token 47 is responsible for predicting token 47, not for the quality of the whole sequence. The training signal is local.
 
-A constant baseline (like the mean reward across a batch) helps with the overall scale -- it centers rewards around zero so that bad responses get negative weight. But it doesn't help with credit assignment. Every token in a bad response still gets the same penalty, even if most tokens were good.
+A constant baseline (like the mean reward across a batch) helps with the overall scale, (it centers rewards around zero so that bad responses get negative weight). But it doesn't help with credit assignment. Every token in a bad response still gets the same penalty, even if most tokens were good.
 
 What we really want is a *per-token* baseline: at each position $k$, an estimate of "given the text generated so far, how good is the rest of the response going to be?" That would let each token's gradient reflect its own marginal contribution: did *this specific token* make the response better or worse than expected from this point on?
 
